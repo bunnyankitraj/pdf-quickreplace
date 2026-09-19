@@ -93,6 +93,20 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
                   : 'border-slate-200 bg-slate-50/50 hover:bg-white hover:border-slate-300'
               }`}
             >
+              {isManualBox && (
+                <div className="flex flex-wrap items-center justify-between gap-1 pb-1.5 border-b border-blue-100 text-xs">
+                  <div className="flex items-center space-x-1.5 text-blue-800 font-semibold">
+                    <Crop className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                    <span>Selected PDF Area &bull; Page {(rule.manualBox?.pageIndex ?? 0) + 1}</span>
+                  </div>
+                  <span className="text-[11px] text-blue-700 bg-blue-100/70 px-2 py-0.5 rounded-full font-medium">
+                    {rule.findText.trim().length > 0 && rule.findText !== 'Selected Area'
+                      ? 'Replaces specific word in area'
+                      : 'Replaces whole box'}
+                  </span>
+                </div>
+              )}
+
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 {/* Index / Type indicator */}
                 <div
@@ -101,27 +115,24 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-200 text-slate-600'
                   }`}
-                  title={isManualBox ? 'Manually selected box on page' : `Rule #${index + 1}`}
+                  title={isManualBox ? 'Manually selected area on page' : `Rule #${index + 1}`}
                 >
                   {isManualBox ? <Crop className="w-3.5 h-3.5" /> : index + 1}
                 </div>
 
-                {/* Find input or Manual Box label */}
+                {/* Find input */}
                 <div className="flex-1 relative">
-                  {isManualBox ? (
-                    <div className="flex items-center space-x-2 text-xs font-medium text-blue-800 bg-blue-100/60 border border-blue-200 px-3 py-2 rounded-lg">
-                      <Crop className="w-4 h-4 text-blue-600 shrink-0" />
-                      <span>Boxed Area (Page {(rule.manualBox?.pageIndex ?? 0) + 1})</span>
-                    </div>
-                  ) : (
-                    <input
-                      type="text"
-                      value={rule.findText}
-                      onChange={(e) => onChangeRule(rule.id, { findText: e.target.value })}
-                      placeholder="Word to find (e.g. Ankit)"
-                      className="w-full text-sm px-3 py-2 bg-white rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 placeholder:text-slate-400"
-                    />
-                  )}
+                  <input
+                    type="text"
+                    value={rule.findText === 'Selected Area' ? '' : rule.findText}
+                    onChange={(e) => onChangeRule(rule.id, { findText: e.target.value })}
+                    placeholder={
+                      isManualBox
+                        ? 'Word in this area (or leave blank for whole box)'
+                        : 'Word to find (e.g. Ankit)'
+                    }
+                    className="w-full text-sm px-3 py-2 bg-white rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 placeholder:text-slate-400"
+                  />
                 </div>
 
                 <div className="hidden sm:flex items-center justify-center text-slate-400">
@@ -141,7 +152,7 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
 
                 {/* Controls & Match badge */}
                 <div className="flex items-center justify-between sm:justify-end space-x-2 pt-1 sm:pt-0">
-                  {!isManualBox && rule.findText.trim().length > 0 && (
+                  {rule.findText.trim().length > 0 && rule.findText !== 'Selected Area' && (
                     <span
                       className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium ${
                         matchCount > 0
@@ -152,10 +163,10 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
                       {matchCount > 0 ? (
                         <>
                           <Check className="w-3 h-3 mr-1" />
-                          {matchCount} {matchCount === 1 ? 'found' : 'found'}
+                          {matchCount} {isManualBox ? 'in area' : 'found'}
                         </>
                       ) : (
-                        '0 found'
+                        isManualBox ? '0 in area' : '0 found'
                       )}
                     </span>
                   )}
@@ -185,6 +196,28 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
                   )}
                 </div>
               </div>
+
+              {/* Quick-pick words inside this selected area */}
+              {isManualBox && rule.manualBox?.wordsInside && rule.manualBox.wordsInside.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  <span className="text-[11px] text-slate-500 font-medium">Click word in area:</span>
+                  {rule.manualBox.wordsInside.slice(0, 12).map((w, wIdx) => (
+                    <button
+                      key={wIdx}
+                      type="button"
+                      onClick={() => onChangeRule(rule.id, { findText: w })}
+                      className={`text-[11px] px-2 py-0.5 rounded-md border transition-colors ${
+                        rule.findText === w
+                          ? 'bg-blue-600 text-white border-blue-600 font-semibold shadow-2xs'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-blue-300 hover:bg-blue-50'
+                      }`}
+                      title={`Select "${w}" to replace in this area`}
+                    >
+                      {w}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* Advanced options accordion */}
               {isExpanded && (

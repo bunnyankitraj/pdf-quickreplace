@@ -11,6 +11,7 @@ export interface ManualBox {
   sampledColor?: string;
   sampledTextColor?: string;
   fontFamily?: FontFamilyChoice;
+  wordsInside?: string[];
 }
 
 export type FontFamilyChoice = 'auto' | 'Helvetica' | 'Courier' | 'TimesRoman';
@@ -191,9 +192,19 @@ export async function findMatchesInPdf(
     };
   }
 
-  // 1. Handle manual box selections
+  // 1. Handle manual box selections (whole-box replacement/redaction ONLY when no specific findText is specified)
   for (const rule of activeRules) {
     if (rule.manualBox) {
+      const isScopedWordRule = Boolean(
+        rule.findText &&
+        rule.findText.trim().length > 0 &&
+        rule.findText.trim() !== 'Selected Area'
+      );
+
+      // If user provided a specific word to replace inside this box, do NOT replace the whole box!
+      // It will be scanned and replaced specifically inside the box in Step 2!
+      if (isScopedWordRule) continue;
+
       const box = rule.manualBox;
       const baseFontSize = Math.max(box.pdfHeight * 0.75, 8);
       const adjustedFontSize = Math.max(4, baseFontSize + (rule.fontSizeAdjustment || 0));
@@ -287,7 +298,24 @@ export async function findMatchesInPdf(
       let matchedWord = '';
 
       for (const rule of activeRules) {
-        if (!rule.findText.trim() || rule.manualBox) continue;
+        // If it's a whole-box rule without a specific word to find, it was already handled in Step 1
+        const isWholeBoxRule =
+          rule.manualBox &&
+          (!rule.findText.trim() || rule.findText.trim() === 'Selected Area');
+        if (isWholeBoxRule) continue;
+        if (!rule.findText.trim()) continue;
+
+        // If it's a scoped box rule, verify it is on the current page and intersects with the box!
+        if (rule.manualBox) {
+          if (rule.manualBox.pageIndex !== pageIndex) continue;
+          const box = rule.manualBox;
+          const inBox =
+            tx < box.pdfX + box.pdfWidth &&
+            tx + (item.width || 10) > box.pdfX &&
+            ty - 2 < box.pdfY + box.pdfHeight &&
+            ty + fontSize + 2 > box.pdfY;
+          if (!inBox) continue;
+        }
 
         const escaped = rule.findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const pattern = rule.matchWholeWord ? `\\b${escaped}\\b` : escaped;
@@ -412,12 +440,28 @@ export async function findMatchesInPdf(
     const ocrWords = ocrWordsByPage?.get(pageIndex);
     if (ocrWords && ocrWords.length > 0) {
       for (const rule of activeRules) {
-        if (!rule.findText.trim() || rule.manualBox) continue;
+        const isWholeBoxRule =
+          rule.manualBox &&
+          (!rule.findText.trim() || rule.findText.trim() === 'Selected Area');
+        if (isWholeBoxRule) continue;
+        if (!rule.findText.trim()) continue;
+
+        if (rule.manualBox && rule.manualBox.pageIndex !== pageIndex) continue;
 
         const rawTarget = rule.findText.trim();
         const target = rule.caseSensitive ? rawTarget : rawTarget.toLowerCase();
 
         for (const word of ocrWords) {
+          if (rule.manualBox) {
+            const box = rule.manualBox;
+            const inBox =
+              word.pdfX < box.pdfX + box.pdfWidth &&
+              word.pdfX + word.pdfWidth > box.pdfX &&
+              word.pdfY < box.pdfY + box.pdfHeight &&
+              word.pdfY + word.pdfHeight > box.pdfY;
+            if (!inBox) continue;
+          }
+
           const rawWordText = word.text;
           const cleanWordText = rawWordText.replace(/^[^\w]+|[^\w]+$/g, '');
           const wordText = rule.caseSensitive ? cleanWordText : cleanWordText.toLowerCase();

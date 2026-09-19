@@ -162,9 +162,12 @@ export const App: React.FC = () => {
   };
 
   const handleManualBoxCreated = (box: ManualBox) => {
+    // If the user drew a box around a single word, pre-populate that word!
+    const initialFind = box.wordsInside && box.wordsInside.length === 1 ? box.wordsInside[0] : '';
+
     const newRule: ReplacementRule = {
       id: `rule-box-${Date.now()}`,
-      findText: 'Selected Area',
+      findText: initialFind,
       replaceText: '',
       caseSensitive: false,
       matchWholeWord: false,
@@ -399,6 +402,7 @@ export const App: React.FC = () => {
                 pdfBytes={pdfBytes}
                 pageCount={pageCount}
                 occurrences={stats?.occurrences ?? []}
+                rules={rules}
                 isScannedPdf={isScannedPdf}
                 onOcrCompleted={handleOcrCompleted}
                 onManualBoxCreated={handleManualBoxCreated}

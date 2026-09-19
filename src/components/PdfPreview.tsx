@@ -18,7 +18,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { pdfjsLib } from '../lib/pdfWorker';
-import { MatchOccurrence, ManualBox } from '../lib/pdfReplacer';
+import { MatchOccurrence, ManualBox, ReplacementRule } from '../lib/pdfReplacer';
 import { runOcrOnPage, OcrWord } from '../lib/ocrService';
 
 interface PageTextItem {
@@ -33,6 +33,7 @@ interface PdfPreviewProps {
   pdfBytes: Uint8Array;
   pageCount: number;
   occurrences: MatchOccurrence[];
+  rules?: ReplacementRule[];
   isScannedPdf: boolean;
   onOcrCompleted: (pageIndex: number, words: OcrWord[]) => void;
   onManualBoxCreated: (box: ManualBox) => void;
@@ -43,6 +44,7 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
   pdfBytes,
   pageCount,
   occurrences,
+  rules,
   isScannedPdf,
   onOcrCompleted,
   onManualBoxCreated,
@@ -428,6 +430,26 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
         }
       }
 
+      // Extract words falling inside this box
+      const wordsInside: string[] = [];
+      for (const item of pageTextItemsRef.current) {
+        const overlap =
+          item.x < pdfX + pdfWidth &&
+          item.x + item.width > pdfX &&
+          item.y - 2 < pdfY + pdfHeight &&
+          item.y + item.height + 2 > pdfY;
+
+        if (overlap) {
+          const rawWords = item.str.split(/\s+/);
+          for (const raw of rawWords) {
+            const clean = raw.replace(/^[^\w]+|[^\w]+$/g, '');
+            if (clean.length > 0 && !wordsInside.includes(clean) && wordsInside.length < 15) {
+              wordsInside.push(clean);
+            }
+          }
+        }
+      }
+
       onManualBoxCreated({
         pageIndex,
         pdfX,
@@ -437,6 +459,7 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
         sampledColor,
         sampledTextColor,
         fontFamily: isScannedPdf ? 'Courier' : 'auto',
+        wordsInside,
       });
 
       setIsDrawMode(false);
@@ -748,6 +771,35 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
               className="absolute inset-0 pointer-events-none"
               style={{ width: pageViewport.width, height: pageViewport.height }}
             >
+              {/* Defined Manual Box Areas on this page */}
+              {rules &&
+                rules.map((r, rIdx) => {
+                  if (!r.manualBox || r.manualBox.pageIndex !== pageIndex) return null;
+                  const b = r.manualBox;
+                  const scaledX = b.pdfX * scale;
+                  const scaledY = pageViewport.height - (b.pdfY + b.pdfHeight) * scale;
+                  const scaledW = b.pdfWidth * scale;
+                  const scaledH = b.pdfHeight * scale;
+
+                  return (
+                    <div
+                      key={`manual-box-frame-${r.id}`}
+                      className="absolute border border-dashed border-blue-500/70 bg-blue-500/5 pointer-events-none z-10 rounded-xs"
+                      style={{
+                        left: `${scaledX}px`,
+                        top: `${scaledY}px`,
+                        width: `${scaledW}px`,
+                        height: `${scaledH}px`,
+                      }}
+                    >
+                      <span className="absolute -top-4 left-0 text-[10px] font-bold bg-blue-600 text-white px-1.5 py-0.2 rounded shadow-2xs whitespace-nowrap">
+                        📍 Area #{rIdx + 1}
+                        {r.findText && r.findText !== 'Selected Area' ? `: "${r.findText}"` : ''}
+                      </span>
+                    </div>
+                  );
+                })}
+
               {currentPageMatches.map((match, idx) => {
                 const isCurrentActiveMatch = activeMatch && activeMatch === match;
                 const hasReplacement = Boolean(
