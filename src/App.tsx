@@ -205,6 +205,66 @@ export const App: React.FC = () => {
     );
   };
 
+  const handleBulkImport = (newRules: ReplacementRule[]) => {
+    setRules((prev) => {
+      // If the current list only has one empty rule, replace it entirely
+      if (
+        prev.length === 1 &&
+        !prev[0].findText.trim() &&
+        !prev[0].replaceText.trim() &&
+        !prev[0].manualBox
+      ) {
+        return newRules;
+      }
+      return [...prev, ...newRules];
+    });
+  };
+
+  const handleClearRules = () => {
+    setRules([
+      {
+        id: `rule-${Date.now()}`,
+        findText: '',
+        replaceText: '',
+        caseSensitive: false,
+        matchWholeWord: false,
+        maskColor: 'auto',
+        textColor: 'auto',
+        fontFamily: 'auto',
+        isBold: 'auto',
+      },
+    ]);
+  };
+
+  const handlePickWord = (word: string) => {
+    setRules((prev) => {
+      // If there's an existing empty rule, populate that first
+      const emptyIdx = prev.findIndex(
+        (r) => !r.findText.trim() && !r.replaceText.trim() && !r.manualBox
+      );
+      if (emptyIdx !== -1) {
+        const updated = [...prev];
+        updated[emptyIdx] = { ...updated[emptyIdx], findText: word };
+        return updated;
+      }
+      // Otherwise append a new rule
+      return [
+        ...prev,
+        {
+          id: `rule-${Date.now()}`,
+          findText: word,
+          replaceText: '',
+          caseSensitive: false,
+          matchWholeWord: false,
+          maskColor: 'auto',
+          textColor: 'auto',
+          fontFamily: 'auto',
+          isBold: 'auto',
+        },
+      ];
+    });
+  };
+
   const handleReplaceAndDownload = async () => {
     if (!pdfBytes || !fileName) return;
 
@@ -272,6 +332,8 @@ export const App: React.FC = () => {
                 onChangeRule={handleChangeRule}
                 onAddRule={handleAddRule}
                 onRemoveRule={handleRemoveRule}
+                onBulkImport={handleBulkImport}
+                onClearRules={handleClearRules}
                 matchesByRule={stats?.matchesByRule ?? {}}
                 isScanning={isScanning}
               />
@@ -340,6 +402,7 @@ export const App: React.FC = () => {
                 isScannedPdf={isScannedPdf}
                 onOcrCompleted={handleOcrCompleted}
                 onManualBoxCreated={handleManualBoxCreated}
+                onPickWord={handlePickWord}
               />
             </div>
           </div>

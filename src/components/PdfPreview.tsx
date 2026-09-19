@@ -13,10 +13,21 @@ import {
   AlertCircle,
   Maximize2,
   ArrowLeftRight,
+  MousePointerClick,
+  Layers,
+  Sparkles,
 } from 'lucide-react';
 import { pdfjsLib } from '../lib/pdfWorker';
 import { MatchOccurrence, ManualBox } from '../lib/pdfReplacer';
 import { runOcrOnPage, OcrWord } from '../lib/ocrService';
+
+interface PageTextItem {
+  str: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 interface PdfPreviewProps {
   pdfBytes: Uint8Array;
@@ -25,6 +36,7 @@ interface PdfPreviewProps {
   isScannedPdf: boolean;
   onOcrCompleted: (pageIndex: number, words: OcrWord[]) => void;
   onManualBoxCreated: (box: ManualBox) => void;
+  onPickWord?: (word: string) => void;
 }
 
 export const PdfPreview: React.FC<PdfPreviewProps> = ({
@@ -34,6 +46,7 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
   isScannedPdf,
   onOcrCompleted,
   onManualBoxCreated,
+  onPickWord,
 }) => {
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [scale, setScale] = useState<number>(1.0);
@@ -41,6 +54,16 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
   const [isRendering, setIsRendering] = useState<boolean>(false);
   const [isOcrRunning, setIsOcrRunning] = useState<boolean>(false);
   const [ocrSuccessMsg, setOcrSuccessMsg] = useState<string | null>(null);
+
+  // Compare mode: view original vs live replaced
+  const [isCompareOriginal, setIsCompareOriginal] = useState<boolean>(false);
+
+  // Match navigation index
+  const [activeMatchIdx, setActiveMatchIdx] = useState<number>(0);
+
+  // Click-to-Pick Text mode
+  const [isPickWordMode, setIsPickWordMode] = useState<boolean>(false);
+  const [pickedWordNotice, setPickedWordNotice] = useState<string | null>(null);
 
   // Manual Box selection state
   const [isDrawMode, setIsDrawMode] = useState<boolean>(false);
@@ -58,6 +81,7 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
+  const pageTextItemsRef = useRef<PageTextItem[]>([]);
 
   const pageIndex = currentPage - 1;
   const currentPageMatches = occurrences.filter((o) => o.pageIndex === pageIndex);
@@ -91,6 +115,34 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
     hasAutoFitRef.current = false;
   }, [pdfBytes]);
 
+  // Match Navigation Handlers
+  const handlePrevMatch = () => {
+    if (occurrences.length === 0) return;
+    const newIdx = (activeMatchIdx - 1 + occurrences.length) % occurrences.length;
+    setActiveMatchIdx(newIdx);
+    const target = occurrences[newIdx];
+    if (target && target.pageIndex !== pageIndex) {
+      setCurrentPage(target.pageIndex + 1);
+    }
+  };
+
+  const handleNextMatch = () => {
+    if (occurrences.length === 0) return;
+    const newIdx = (activeMatchIdx + 1) % occurrences.length;
+    setActiveMatchIdx(newIdx);
+    const target = occurrences[newIdx];
+    if (target && target.pageIndex !== pageIndex) {
+      setCurrentPage(target.pageIndex + 1);
+    }
+  };
+
+  // Keep activeMatchIdx within range when occurrences change
+  useEffect(() => {
+    if (activeMatchIdx >= occurrences.length && occurrences.length > 0) {
+      setActiveMatchIdx(0);
+    }
+  }, [occurrences.length, activeMatchIdx]);
+
   useEffect(() => {
     let isCancelled = false;
 
@@ -109,6 +161,28 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
 
         const page = await doc.getPage(currentPage);
         if (isCancelled) return;
+
+        // Extract text items for Click-to-Pick feature
+        try {
+          const textContent = await page.getTextContent();
+          const items: PageTextItem[] = [];
+          for (const item of textContent.items as any[]) {
+            if (!item.str || item.str.trim().length === 0) continue;
+            const tx = item.transform[4];
+            const ty = item.transform[5];
+            const fontSize = Math.hypot(item.transform[0], item.transform[1]) || item.height || 12;
+            items.push({
+              str: item.str,
+              x: tx,
+              y: ty,
+              width: item.width || item.str.length * (fontSize * 0.5),
+              height: fontSize,
+            });
+          }
+          pageTextItemsRef.current = items;
+        } catch {
+          pageTextItemsRef.current = [];
+        }
 
         const unscaledViewport = page.getViewport({ scale: 1.0 });
 
@@ -199,6 +273,59 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
       alert('OCR failed to recognize words on this image.');
     } finally {
       setIsOcrRunning(false);
+    }
+  };
+
+  // Click-to-Pick Text Handler
+  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isDrawMode) return;
+    if (!isPickWordMode || !pageViewport || !onPickWord) return;
+
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    const pdfX = clickX / scale;
+    const pdfY = pageViewport.pdfHeight - clickY / scale;
+
+    // Search for matching text item
+    for (const item of pageTextItemsRef.current) {
+      if (
+        pdfX >= item.x - 4 &&
+        pdfX <= item.x + item.width + 4 &&
+        pdfY >= item.y - 4 &&
+        pdfY <= item.y + item.height + 6
+      ) {
+        // Isolate the clicked word
+        const relX = Math.max(0, pdfX - item.x);
+        const approxCharWidth = item.width / Math.max(1, item.str.length);
+        const charIdx = Math.min(
+          item.str.length - 1,
+          Math.max(0, Math.floor(relX / approxCharWidth))
+        );
+
+        const str = item.str;
+        let start = charIdx;
+        let end = charIdx;
+
+        while (start > 0 && /[^\s,;:]/.test(str[start - 1])) {
+          start--;
+        }
+        while (end < str.length && /[^\s,;:]/.test(str[end])) {
+          end++;
+        }
+
+        const word = str.slice(start, end).trim();
+        if (word.length > 0) {
+          onPickWord(word);
+          setPickedWordNotice(`Added "${word}" to find rules!`);
+          setTimeout(() => setPickedWordNotice(null), 3000);
+          setIsPickWordMode(false);
+          return;
+        }
+      }
     }
   };
 
@@ -319,6 +446,8 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
     setCurrentDrag(null);
   };
 
+  const activeMatch = occurrences[activeMatchIdx];
+
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
       {/* Notice Banner for Scanned / Image-only PDFs */}
@@ -354,6 +483,13 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
         <div className="p-2.5 bg-emerald-50 border-b border-emerald-200 flex items-center space-x-2 text-xs text-emerald-800 animate-in fade-in">
           <Check className="w-4 h-4 text-emerald-600" />
           <span>{ocrSuccessMsg}</span>
+        </div>
+      )}
+
+      {pickedWordNotice && (
+        <div className="p-2.5 bg-blue-50 border-b border-blue-200 flex items-center space-x-2 text-xs text-blue-800 animate-in fade-in">
+          <Check className="w-4 h-4 text-blue-600" />
+          <span>{pickedWordNotice}</span>
         </div>
       )}
 
@@ -425,21 +561,82 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
           </button>
         </div>
 
-        {/* Action Tools: Highlights, OCR, Draw Box */}
+        {/* Match Navigation when matches exist */}
+        {occurrences.length > 0 && (
+          <div className="flex items-center space-x-1 bg-white px-2 py-1 rounded-lg border border-slate-200">
+            <button
+              onClick={handlePrevMatch}
+              className="p-1 hover:bg-slate-100 rounded text-slate-600"
+              title="Previous match"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <span className="font-medium text-slate-700 text-[11px] px-1 whitespace-nowrap">
+              Match {activeMatchIdx + 1} of {occurrences.length}
+            </span>
+            <button
+              onClick={handleNextMatch}
+              className="p-1 hover:bg-slate-100 rounded text-slate-600"
+              title="Next match"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Action Tools: Compare, Pick Word, Draw Box, OCR, Toggle Highlights */}
         <div className="flex items-center space-x-1.5">
+          {/* Before vs After Comparison Toggle */}
           <button
-            onClick={() => setIsDrawMode(!isDrawMode)}
+            onClick={() => setIsCompareOriginal(!isCompareOriginal)}
+            className={`inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg border transition-colors ${
+              isCompareOriginal
+                ? 'bg-amber-500 border-amber-600 text-white shadow-xs font-semibold'
+                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+            }`}
+            title="Toggle between original PDF and edited replacement view"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">
+              {isCompareOriginal ? 'Original' : 'Compare Original'}
+            </span>
+          </button>
+
+          {/* Click to Pick Word */}
+          <button
+            onClick={() => {
+              setIsPickWordMode(!isPickWordMode);
+              if (isDrawMode) setIsDrawMode(false);
+            }}
+            className={`inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg border transition-colors ${
+              isPickWordMode
+                ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs font-semibold'
+                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+            }`}
+            title="Click any word on the PDF to instantly add it to Find & Replace"
+          >
+            <MousePointerClick className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Pick Word</span>
+          </button>
+
+          {/* Select Box mode */}
+          <button
+            onClick={() => {
+              setIsDrawMode(!isDrawMode);
+              if (isPickWordMode) setIsPickWordMode(false);
+            }}
             className={`inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg border transition-colors ${
               isDrawMode
-                ? 'bg-blue-600 border-blue-600 text-white shadow-xs'
+                ? 'bg-blue-600 border-blue-600 text-white shadow-xs font-semibold'
                 : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
             }`}
             title="Click and drag on the PDF to select any text area to replace"
           >
             <Crop className="w-3.5 h-3.5" />
-            <span>{isDrawMode ? 'Cancel' : 'Select on PDF'}</span>
+            <span className="hidden sm:inline">{isDrawMode ? 'Cancel' : 'Select Box'}</span>
           </button>
 
+          {/* OCR button */}
           <button
             disabled={isOcrRunning}
             onClick={handleRunOcr}
@@ -451,9 +648,10 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
             ) : (
               <ScanText className="w-3.5 h-3.5 text-blue-600" />
             )}
-            <span>OCR</span>
+            <span className="hidden sm:inline">OCR</span>
           </button>
 
+          {/* Toggle Highlights */}
           <button
             onClick={() => setShowHighlights(!showHighlights)}
             className={`inline-flex items-center space-x-1 p-1.5 rounded-lg border transition-colors ${
@@ -468,14 +666,39 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
         </div>
       </div>
 
+      {/* Guide Banner for active interactive modes */}
       {isDrawMode && (
         <div className="bg-blue-50 px-4 py-2 text-xs text-blue-800 border-b border-blue-200 flex items-center justify-between">
-          <span>🎯 Click and drag across any word or number on the PDF to select it for replacement.</span>
+          <span>🎯 <strong>Draw Box Mode:</strong> Click and drag across any word, number, or image area on the PDF.</span>
           <button
             onClick={() => setIsDrawMode(false)}
             className="text-blue-600 underline font-semibold ml-2"
           >
-            Done
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {isPickWordMode && (
+        <div className="bg-emerald-50 px-4 py-2 text-xs text-emerald-800 border-b border-emerald-200 flex items-center justify-between">
+          <span>👆 <strong>Pick Word Mode:</strong> Click any word directly on the PDF to instantly add it to your Find rules!</span>
+          <button
+            onClick={() => setIsPickWordMode(false)}
+            className="text-emerald-600 underline font-semibold ml-2"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {isCompareOriginal && (
+        <div className="bg-amber-50 px-4 py-2 text-xs text-amber-900 border-b border-amber-200 flex items-center justify-between">
+          <span>👁️ <strong>Viewing Original PDF:</strong> Replacement masks and text are temporarily hidden for comparison.</span>
+          <button
+            onClick={() => setIsCompareOriginal(false)}
+            className="text-amber-700 underline font-semibold ml-2"
+          >
+            Switch to Edited
           </button>
         </div>
       )}
@@ -493,8 +716,13 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
 
         <div
           className={`relative shadow-lg rounded-md overflow-hidden bg-white ${
-            isDrawMode ? 'cursor-crosshair' : 'cursor-default'
+            isDrawMode
+              ? 'cursor-crosshair'
+              : isPickWordMode
+              ? 'cursor-pointer'
+              : 'cursor-default'
           }`}
+          onClick={handleCanvasClick}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -514,13 +742,14 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
             />
           )}
 
-          {/* Live Replacement & Highlight Overlays */}
-          {showHighlights && pageViewport && (
+          {/* Live Replacement & Highlight Overlays (hidden in compare original mode) */}
+          {!isCompareOriginal && showHighlights && pageViewport && (
             <div
               className="absolute inset-0 pointer-events-none"
               style={{ width: pageViewport.width, height: pageViewport.height }}
             >
               {currentPageMatches.map((match, idx) => {
+                const isCurrentActiveMatch = activeMatch && activeMatch === match;
                 const hasReplacement = Boolean(
                   match.replaceText && match.replaceText.trim().length > 0
                 );
@@ -556,6 +785,10 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
                   <div
                     key={idx}
                     className={`absolute rounded-xs pointer-events-auto group transition-all ${
+                      isCurrentActiveMatch
+                        ? 'ring-2 ring-blue-600 ring-offset-2 z-30 shadow-md'
+                        : ''
+                    } ${
                       hasReplacement
                         ? 'border border-blue-500/80'
                         : 'border border-amber-500/90 bg-amber-400/35'

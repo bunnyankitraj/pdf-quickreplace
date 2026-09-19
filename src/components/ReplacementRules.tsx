@@ -11,12 +11,15 @@ import {
   Bold,
 } from 'lucide-react';
 import { ReplacementRule, FontFamilyChoice } from '../lib/pdfReplacer';
+import { BulkImportModal } from './BulkImportModal';
 
 interface ReplacementRulesProps {
   rules: ReplacementRule[];
   onChangeRule: (id: string, updated: Partial<ReplacementRule>) => void;
   onAddRule: () => void;
   onRemoveRule: (id: string) => void;
+  onBulkImport: (newRules: ReplacementRule[]) => void;
+  onClearRules: () => void;
   matchesByRule: Record<string, number>;
   isScanning: boolean;
 }
@@ -26,10 +29,13 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
   onChangeRule,
   onAddRule,
   onRemoveRule,
+  onBulkImport,
+  onClearRules,
   matchesByRule,
   isScanning,
 }) => {
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null);
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState<boolean>(false);
 
   const toggleOptions = (id: string) => {
     setExpandedRuleId(expandedRuleId === id ? null : id);
@@ -37,20 +43,39 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
 
   return (
     <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm space-y-5">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold text-slate-900">Find & Replace Rules</h2>
           <p className="text-xs text-slate-500">
-            Automatically preserves original text color, font style, and size.
+            Preserves original text color, font style, and natural text reflow.
           </p>
         </div>
-        <button
-          onClick={onAddRule}
-          className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs font-semibold transition-colors"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>Add Rule</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          {(rules.length > 1 || rules.some((r) => r.findText || r.replaceText || r.manualBox)) && (
+            <button
+              onClick={onClearRules}
+              className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl text-slate-500 hover:text-rose-600 hover:bg-rose-50 text-xs font-medium transition-colors"
+              title="Clear all replacement rules"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Clear All</span>
+            </button>
+          )}
+          <button
+            onClick={() => setIsBulkModalOpen(true)}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors"
+            title="Paste multiple find and replace pairs"
+          >
+            <span>Paste Pairs</span>
+          </button>
+          <button
+            onClick={onAddRule}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs font-semibold transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Add Rule</span>
+          </button>
+        </div>
       </div>
 
       <div className="space-y-3">
@@ -283,6 +308,15 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
           );
         })}
       </div>
+
+      <BulkImportModal
+        isOpen={isBulkModalOpen}
+        onClose={() => setIsBulkModalOpen(false)}
+        onImport={(newRules) => {
+          onBulkImport(newRules);
+          setIsBulkModalOpen(false);
+        }}
+      />
     </div>
   );
 };
