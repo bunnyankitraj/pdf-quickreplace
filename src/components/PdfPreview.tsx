@@ -85,6 +85,12 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
     setScale(Math.max(0.4, Math.min(2.5, parseFloat(newScale.toFixed(2)))));
   }, [pageViewport]);
 
+  const hasAutoFitRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    hasAutoFitRef.current = false;
+  }, [pdfBytes]);
+
   useEffect(() => {
     let isCancelled = false;
 
@@ -105,12 +111,27 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
         if (isCancelled) return;
 
         const unscaledViewport = page.getViewport({ scale: 1.0 });
-        const viewport = page.getViewport({ scale });
+
+        let currentScale = scale;
+        if (!hasAutoFitRef.current && containerRef.current) {
+          const containerWidth = containerRef.current.clientWidth - 48;
+          const containerHeight = containerRef.current.clientHeight - 48;
+          if (containerWidth > 0 && containerHeight > 0) {
+            const scaleX = containerWidth / unscaledViewport.width;
+            const scaleY = containerHeight / unscaledViewport.height;
+            const fitScale = Math.min(scaleX, scaleY, 2.5);
+            currentScale = Math.max(0.4, parseFloat(fitScale.toFixed(2)));
+            setScale(currentScale);
+            hasAutoFitRef.current = true;
+          }
+        }
+
+        const viewport = page.getViewport({ scale: currentScale });
 
         setPageViewport({
           width: viewport.width,
           height: viewport.height,
-          scale,
+          scale: currentScale,
           pdfWidth: unscaledViewport.width,
           pdfHeight: unscaledViewport.height,
         });
@@ -566,10 +587,16 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
                     {/* Tooltip on hover */}
                     <div className="opacity-0 group-hover:opacity-100 transition-opacity absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2.5 py-1 bg-slate-900 text-white text-[11px] rounded-lg shadow-xl whitespace-nowrap pointer-events-none z-30 flex items-center space-x-2">
                       <span className="font-semibold text-slate-300">&quot;{match.originalText}&quot;</span>
-                      <span className="text-slate-400">&rarr;</span>
-                      <span style={{ color: match.textColor }} className="font-bold">
-                        {match.replaceText ? `"${match.replaceText}"` : '(Type replacement)'}
-                      </span>
+                      {hasReplacement ? (
+                        <>
+                          <span className="text-slate-400">&rarr;</span>
+                          <span style={{ color: match.textColor }} className="font-bold">
+                            &quot;{match.replaceText}&quot;
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-amber-400 font-semibold">(Found Match)</span>
+                      )}
                       {match.isBold && (
                         <span className="text-[9px] px-1 py-0.5 rounded bg-blue-800 text-blue-200 font-bold">
                           BOLD
