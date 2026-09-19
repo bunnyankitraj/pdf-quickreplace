@@ -19,6 +19,9 @@ export const Header: React.FC<HeaderProps> = ({ onOpenHelp }) => {
               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
                 100% Free
               </span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-mono text-blue-700 bg-blue-50 border border-blue-200 font-medium" title="Latest deployment with Area-Scoped replacement">
+                v1.2
+              </span>
             </div>
             <p className="text-xs text-slate-500 hidden sm:block">
               Browser-based text replacement &bull; Zero server uploads
