@@ -500,7 +500,12 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
               style={{ width: pageViewport.width, height: pageViewport.height }}
             >
               {currentPageMatches.map((match, idx) => {
+                const hasReplacement = Boolean(
+                  match.replaceText && match.replaceText.trim().length > 0
+                );
+
                 const isReflow = Boolean(
+                  hasReplacement &&
                   match.isItemReflow &&
                   match.fullReplacedStr !== undefined &&
                   match.itemX !== undefined &&
@@ -510,11 +515,13 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
                 const targetX = isReflow ? match.itemX! : match.x;
                 const targetY = isReflow ? match.itemY! : match.y;
                 const targetWidth = isReflow ? (match.itemWidth || match.width) : match.width;
-                const displayText = isReflow ? match.fullReplacedStr! : match.replaceText;
+                const displayText = hasReplacement
+                  ? (isReflow ? match.fullReplacedStr! : match.replaceText)
+                  : '';
 
                 const scaledX = targetX * scale;
                 const scaledHeight = match.height * 1.35 * scale;
-                const scaledWidth = Math.max(targetWidth * scale, 12);
+                const scaledWidth = Math.max(targetWidth * scale, 10);
                 const scaledY = pageViewport.height - targetY * scale - match.height * 0.85 * scale;
 
                 const fontCssFamily =
@@ -527,17 +534,21 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
                 return (
                   <div
                     key={idx}
-                    className="absolute border border-blue-500/80 rounded-xs pointer-events-auto group transition-all"
+                    className={`absolute rounded-xs pointer-events-auto group transition-all ${
+                      hasReplacement
+                        ? 'border border-blue-500/80'
+                        : 'border border-amber-500/90 bg-amber-400/35'
+                    }`}
                     style={{
                       left: `${scaledX - 1}px`,
                       top: `${scaledY - 2}px`,
-                      width: `${scaledWidth + 3}px`,
+                      width: `${scaledWidth + 2}px`,
                       height: `${scaledHeight + 4}px`,
-                      backgroundColor: displayText ? match.maskColor : 'rgba(251, 191, 36, 0.25)',
+                      backgroundColor: hasReplacement ? match.maskColor : undefined,
                     }}
                   >
-                    {/* Live Replacement Text directly in preview! */}
-                    {displayText ? (
+                    {/* Live Replacement Text only when replacement is provided */}
+                    {hasReplacement && displayText ? (
                       <span
                         className="absolute inset-0 flex items-center overflow-hidden px-0.5 whitespace-nowrap"
                         style={{

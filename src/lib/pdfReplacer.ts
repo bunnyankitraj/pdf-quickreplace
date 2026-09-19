@@ -282,8 +282,8 @@ export async function findMatchesInPdf(
       const origTextColor = findColorForText(itemStr, opSnippets, '#000000');
 
       let currentItemStr = itemStr;
-      let hasMatchedItem = false;
-      let firstMatchedRule: ReplacementRule | null = null;
+      let hasReplacementMatch = false;
+      let firstReplacementRule: ReplacementRule | null = null;
       let matchedWord = '';
 
       for (const rule of activeRules) {
@@ -299,51 +299,90 @@ export async function findMatchesInPdf(
           continue;
         }
 
-        if (regex.test(currentItemStr)) {
-          hasMatchedItem = true;
-          if (!firstMatchedRule) firstMatchedRule = rule;
+        const isReplacing = rule.replaceText.trim().length > 0;
 
-          // Count occurrences
-          regex.lastIndex = 0;
-          const matches = currentItemStr.match(regex);
-          if (matches) {
-            matchesByRule[rule.id] = (matchesByRule[rule.id] || 0) + matches.length;
-            matchedWord = matches[0];
+        if (isReplacing) {
+          if (regex.test(currentItemStr)) {
+            hasReplacementMatch = true;
+            if (!firstReplacementRule) firstReplacementRule = rule;
+
+            regex.lastIndex = 0;
+            const matches = currentItemStr.match(regex);
+            if (matches) {
+              matchesByRule[rule.id] = (matchesByRule[rule.id] || 0) + matches.length;
+              matchedWord = matches[0];
+            }
+
+            currentItemStr = currentItemStr.replace(regex, rule.replaceText);
           }
+        } else {
+          // User is just typing/finding - ONLY highlight the matched substring, DO NOT reflow or erase!
+          let match: RegExpExecArray | null;
+          while ((match = regex.exec(itemStr)) !== null) {
+            matchesByRule[rule.id] = (matchesByRule[rule.id] || 0) + 1;
 
-          // Reflow the entire text item replacing the matched word!
-          currentItemStr = currentItemStr.replace(regex, rule.replaceText);
+            const matchIndex = match.index;
+            const matchText = match[0];
+            const matchLen = matchText.length;
+
+            let subX = tx;
+            let subWidth = item.width;
+            if (itemStr.length > 0 && itemStr.length !== matchLen) {
+              const charWidth = item.width / itemStr.length;
+              subX = tx + matchIndex * charWidth;
+              subWidth = matchLen * charWidth;
+            }
+
+            occurrences.push({
+              ruleId: rule.id,
+              pageIndex,
+              x: subX,
+              y: ty,
+              width: subWidth,
+              height: fontSize,
+              fontSize,
+              originalText: matchText,
+              replaceText: '',
+              maskColor: 'transparent',
+              textColor: origTextColor,
+              fontFamily: origFamily,
+              isBold: origIsBold,
+              isItemReflow: false,
+            });
+
+            pagesWithMatches.add(pageIndex);
+          }
         }
       }
 
-      if (hasMatchedItem && firstMatchedRule) {
+      if (hasReplacementMatch && firstReplacementRule) {
         const adjustedFontSize = Math.max(
           4,
-          fontSize + (firstMatchedRule.fontSizeAdjustment || 0)
+          fontSize + (firstReplacementRule.fontSizeAdjustment || 0)
         );
 
         const finalTextColor =
-          firstMatchedRule.textColor && firstMatchedRule.textColor !== 'auto'
-            ? firstMatchedRule.textColor
+          firstReplacementRule.textColor && firstReplacementRule.textColor !== 'auto'
+            ? firstReplacementRule.textColor
             : origTextColor;
 
         const finalFontFamily =
-          firstMatchedRule.fontFamily && firstMatchedRule.fontFamily !== 'auto'
-            ? firstMatchedRule.fontFamily
+          firstReplacementRule.fontFamily && firstReplacementRule.fontFamily !== 'auto'
+            ? firstReplacementRule.fontFamily
             : origFamily;
 
         const finalIsBold =
-          firstMatchedRule.isBold === 'auto' || firstMatchedRule.isBold === undefined
+          firstReplacementRule.isBold === 'auto' || firstReplacementRule.isBold === undefined
             ? origIsBold
-            : Boolean(firstMatchedRule.isBold);
+            : Boolean(firstReplacementRule.isBold);
 
         const finalMaskColor =
-          firstMatchedRule.maskColor && firstMatchedRule.maskColor !== 'auto'
-            ? firstMatchedRule.maskColor
+          firstReplacementRule.maskColor && firstReplacementRule.maskColor !== 'auto'
+            ? firstReplacementRule.maskColor
             : '#ffffff';
 
         occurrences.push({
-          ruleId: firstMatchedRule.id,
+          ruleId: firstReplacementRule.id,
           pageIndex,
           x: tx,
           y: ty,
@@ -351,7 +390,7 @@ export async function findMatchesInPdf(
           height: fontSize,
           fontSize: adjustedFontSize,
           originalText: matchedWord || itemStr,
-          replaceText: firstMatchedRule.replaceText,
+          replaceText: firstReplacementRule.replaceText,
           maskColor: finalMaskColor,
           textColor: finalTextColor,
           fontFamily: finalFontFamily,
@@ -480,6 +519,11 @@ export async function replaceTextInPdf(
     const page = pages[pageIndex];
 
     for (const occ of occList) {
+      // Do NOT erase or mask anything if replaceText is empty
+      if (!occ.replaceText || occ.replaceText.trim().length === 0) {
+        continue;
+      }
+
       if (occ.isItemReflow && occ.fullReplacedStr !== undefined && occ.itemX !== undefined && occ.itemY !== undefined) {
         // Whole-line reflow: Mask the entire original text item
         const maskY = occ.itemY - occ.fontSize * 0.22;
