@@ -2,12 +2,18 @@ import React, { useRef, useState } from 'react';
 import { UploadCloud, FileText, CheckCircle2, RotateCcw, Sparkles } from 'lucide-react';
 import { createSampleInvoicePdf } from '../lib/pdfHelper';
 import { pdfjsLib } from '../lib/pdfWorker';
+import { imageFileToPdf, isImageFile, SourceImageInfo } from '../lib/imageHelper';
 
 interface DropZoneProps {
   fileName: string | null;
   fileSize: number | null;
   pageCount: number | null;
-  onFileLoaded: (bytes: Uint8Array, fileName: string, pageCount: number) => void;
+  onFileLoaded: (
+    bytes: Uint8Array,
+    fileName: string,
+    pageCount: number,
+    sourceImage?: SourceImageInfo
+  ) => void;
   onReset: () => void;
   isLoading: boolean;
 }
@@ -32,8 +38,19 @@ export const DropZone: React.FC<DropZoneProps> = ({
   };
 
   const handleProcessFile = async (file: File) => {
+    if (isImageFile(file)) {
+      try {
+        const { pdfBytes, info } = await imageFileToPdf(file);
+        onFileLoaded(pdfBytes, file.name, 1, info);
+      } catch (err) {
+        console.error('Image load failed:', err);
+        alert('Could not read this image file.');
+      }
+      return;
+    }
+
     if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      alert('Please select a valid PDF file.');
+      alert('Please select a PDF or image file (PNG, JPG, WebP, GIF, BMP).');
       return;
     }
 
@@ -97,7 +114,7 @@ export const DropZone: React.FC<DropZoneProps> = ({
           <input
             ref={fileInputRef}
             type="file"
-            accept="application/pdf"
+            accept="application/pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp"
             className="hidden"
             onChange={(e) => {
               if (e.target.files && e.target.files[0]) {
@@ -129,7 +146,7 @@ export const DropZone: React.FC<DropZoneProps> = ({
       </div>
 
       <h3 className="text-lg font-semibold text-slate-800 mb-1">
-        Choose a PDF or drag & drop it here
+        Choose a PDF or image, or drag & drop it here
       </h3>
       <p className="text-sm text-slate-500 max-w-md mx-auto mb-6">
         No size limits, completely private. Your document is processed locally in your browser and never uploaded anywhere.
@@ -157,7 +174,7 @@ export const DropZone: React.FC<DropZoneProps> = ({
       <input
         ref={fileInputRef}
         type="file"
-        accept="application/pdf"
+        accept="application/pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp"
         className="hidden"
         onChange={(e) => {
           if (e.target.files && e.target.files[0]) {

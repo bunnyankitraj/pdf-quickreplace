@@ -12,6 +12,7 @@ import {
   replaceTextInPdf,
 } from './lib/pdfReplacer';
 import { OcrWord } from './lib/ocrService';
+import { SourceImageInfo, pdfToImage } from './lib/imageHelper';
 import { Download, Loader2, CheckCircle2, Layers } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -20,6 +21,8 @@ export const App: React.FC = () => {
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [fileSize, setFileSize] = useState<number | null>(null);
   const [isScannedPdf, setIsScannedPdf] = useState<boolean>(false);
+  // Set when the user uploaded an image; the result is exported back to that format.
+  const [sourceImage, setSourceImage] = useState<SourceImageInfo | null>(null);
 
   const [ocrWordsByPage, setOcrWordsByPage] = useState<Map<number, OcrWord[]>>(new Map());
 
@@ -86,11 +89,17 @@ export const App: React.FC = () => {
     };
   }, [pdfBytes, rules, ocrWordsByPage]);
 
-  const handleFileLoaded = (bytes: Uint8Array, name: string, pages: number) => {
+  const handleFileLoaded = (
+    bytes: Uint8Array,
+    name: string,
+    pages: number,
+    image?: SourceImageInfo
+  ) => {
     setPdfBytes(bytes);
     setFileName(name);
     setPageCount(pages);
     setFileSize(bytes.byteLength);
+    setSourceImage(image ?? null);
     setOcrWordsByPage(new Map());
     setDownloadSuccess(null);
 
@@ -149,6 +158,7 @@ export const App: React.FC = () => {
     setFileSize(null);
     setStats(null);
     setIsScannedPdf(false);
+    setSourceImage(null);
     setOcrWordsByPage(new Map());
     setDownloadSuccess(null);
   };
@@ -279,11 +289,18 @@ export const App: React.FC = () => {
         ocrWordsByPage
       );
 
-      const blob = new Blob([modifiedBytes as any], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-
       const baseName = fileName.replace(/\.[^/.]+$/, '');
-      const downloadName = `${baseName}_edited.pdf`;
+      let blob: Blob;
+      let downloadName: string;
+      if (sourceImage) {
+        const image = await pdfToImage(modifiedBytes, sourceImage);
+        blob = image.blob;
+        downloadName = `${baseName}_edited.${image.extension}`;
+      } else {
+        blob = new Blob([modifiedBytes as any], { type: 'application/pdf' });
+        downloadName = `${baseName}_edited.pdf`;
+      }
+      const url = URL.createObjectURL(blob);
 
       const link = document.createElement('a');
       link.href = url;
@@ -380,12 +397,12 @@ export const App: React.FC = () => {
                   {isProcessing ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>Generating & Downloading PDF...</span>
+                      <span>Generating & Downloading {sourceImage ? 'Image' : 'PDF'}...</span>
                     </>
                   ) : (
                     <>
                       <Download className="w-5 h-5" />
-                      <span>Replace & Download PDF</span>
+                      <span>Replace & Download {sourceImage ? 'Image' : 'PDF'}</span>
                     </>
                   )}
                 </button>

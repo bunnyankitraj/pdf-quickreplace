@@ -5,6 +5,7 @@ A 100% free, private, browser-based PDF text editor and replacer.
 ## Features
 - **Zero Server Costs ($0/month)**: Runs entirely client-side using `pdf-lib` and `pdfjs-dist`.
 - **Complete Privacy**: PDF files never leave the user's computer.
+- **Image Support**: Upload PNG, JPG, WebP, GIF or BMP images — run OCR, replace text, and download the edited image in its original format.
 - **Multiple Find & Replace Rules**: Replace multiple words, names, dates, or prices simultaneously.
 - **Visual PDF Preview**: Live canvas preview with page navigation, zoom, and highlighted match bounding boxes.
 - **One-Click Instant Download**: Automatically packages and downloads the modified PDF directly into the user's browser.
