@@ -424,6 +424,7 @@ export const App: React.FC = () => {
                 onOcrCompleted={handleOcrCompleted}
                 onManualBoxCreated={handleManualBoxCreated}
                 onPickWord={handlePickWord}
+                ocrWordsByPage={ocrWordsByPage}
               />
             </div>
           </div>

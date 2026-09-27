@@ -16,6 +16,9 @@ import {
   MousePointerClick,
   Layers,
   Sparkles,
+  List,
+  Search,
+  X,
 } from 'lucide-react';
 import { pdfjsLib } from '../lib/pdfWorker';
 import { MatchOccurrence, ManualBox, ReplacementRule } from '../lib/pdfReplacer';
@@ -38,7 +41,19 @@ interface PdfPreviewProps {
   onOcrCompleted: (pageIndex: number, words: OcrWord[]) => void;
   onManualBoxCreated: (box: ManualBox) => void;
   onPickWord?: (word: string) => void;
+  ocrWordsByPage?: Map<number, OcrWord[]>;
 }
+
+// A word on the current page with its box in PDF points (origin bottom-left).
+interface PageWord {
+  text: string;
+  pdfX: number;
+  pdfY: number;
+  pdfWidth: number;
+  pdfHeight: number;
+}
+
+const cleanWord = (w: string) => w.replace(/^[^\w₹$€£]+|[^\w%]+$/g, '');
 
 export const PdfPreview: React.FC<PdfPreviewProps> = ({
   pdfBytes,
@@ -49,6 +64,7 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
   onOcrCompleted,
   onManualBoxCreated,
   onPickWord,
+  ocrWordsByPage,
 }) => {
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [scale, setScale] = useState<number>(1.0);
@@ -84,9 +100,71 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
   const pageTextItemsRef = useRef<PageTextItem[]>([]);
+  const [pageTextItems, setPageTextItems] = useState<PageTextItem[]>([]);
+
+  // All Words panel
+  const [showAllWords, setShowAllWords] = useState<boolean>(false);
+  const [wordFilter, setWordFilter] = useState<string>('');
+  const [hoveredWord, setHoveredWord] = useState<string | null>(null);
 
   const pageIndex = currentPage - 1;
   const currentPageMatches = occurrences.filter((o) => o.pageIndex === pageIndex);
+
+  // Words on this page: OCR results when available, otherwise the PDF's own text layer
+  // (split into words with widths estimated from character position).
+  const ocrPageWords = ocrWordsByPage?.get(pageIndex);
+  const pageWords: PageWord[] =
+    ocrPageWords && ocrPageWords.length > 0
+      ? ocrPageWords.map((w) => ({
+          text: w.text,
+          pdfX: w.pdfX,
+          pdfY: w.pdfY,
+          pdfWidth: w.pdfWidth,
+          pdfHeight: w.pdfHeight,
+        }))
+      : pageTextItems.flatMap((item) => {
+          const charW = item.width / Math.max(1, item.str.length);
+          const words: PageWord[] = [];
+          const re = /\S+/g;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(item.str))) {
+            words.push({
+              text: m[0],
+              pdfX: item.x + m.index * charW,
+              pdfY: item.y - item.height * 0.2,
+              pdfWidth: m[0].length * charW,
+              pdfHeight: item.height,
+            });
+          }
+          return words;
+        });
+
+  // Unique words for the list, in reading order, with how often each appears.
+  const uniqueWords: { text: string; count: number }[] = [];
+  {
+    const seen = new Map<string, { text: string; count: number }>();
+    for (const w of pageWords) {
+      const t = cleanWord(w.text);
+      if (!t) continue;
+      const entry = seen.get(t);
+      if (entry) entry.count++;
+      else {
+        const e = { text: t, count: 1 };
+        seen.set(t, e);
+        uniqueWords.push(e);
+      }
+    }
+  }
+  const filteredWords = wordFilter.trim()
+    ? uniqueWords.filter((w) => w.text.toLowerCase().includes(wordFilter.trim().toLowerCase()))
+    : uniqueWords;
+
+  const handleWordChipClick = (word: string) => {
+    if (!onPickWord) return;
+    onPickWord(word);
+    setPickedWordNotice(`Added "${word}" to find rules!`);
+    setTimeout(() => setPickedWordNotice(null), 3000);
+  };
 
   // Fit to Page handler
   const handleFitPage = useCallback(() => {
@@ -182,8 +260,10 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
             });
           }
           pageTextItemsRef.current = items;
+          setPageTextItems(items);
         } catch {
           pageTextItemsRef.current = [];
+          setPageTextItems([]);
         }
 
         const unscaledViewport = page.getViewport({ scale: 1.0 });
@@ -291,6 +371,25 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
 
     const pdfX = clickX / scale;
     const pdfY = pageViewport.pdfHeight - clickY / scale;
+
+    // OCR'd pages have exact word boxes
+    if (ocrPageWords && ocrPageWords.length > 0) {
+      const hit = ocrPageWords.find(
+        (w) =>
+          pdfX >= w.pdfX - 2 &&
+          pdfX <= w.pdfX + w.pdfWidth + 2 &&
+          pdfY >= w.pdfY - 2 &&
+          pdfY <= w.pdfY + w.pdfHeight + 2
+      );
+      const word = hit ? cleanWord(hit.text) : '';
+      if (word) {
+        onPickWord(word);
+        setPickedWordNotice(`Added "${word}" to find rules!`);
+        setTimeout(() => setPickedWordNotice(null), 3000);
+        setIsPickWordMode(false);
+      }
+      return;
+    }
 
     // Search for matching text item
     for (const item of pageTextItemsRef.current) {
@@ -642,6 +741,29 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
             <span className="hidden sm:inline">Pick Word</span>
           </button>
 
+          {/* All Words list */}
+          <button
+            onClick={() => setShowAllWords(!showAllWords)}
+            className={`inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg border transition-colors ${
+              showAllWords
+                ? 'bg-violet-600 border-violet-600 text-white shadow-xs font-semibold'
+                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+            }`}
+            title="Show every word found on this page"
+          >
+            <List className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">All Words</span>
+            {uniqueWords.length > 0 && (
+              <span
+                className={`px-1.5 rounded-full text-[10px] font-semibold ${
+                  showAllWords ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-600'
+                }`}
+              >
+                {uniqueWords.length}
+              </span>
+            )}
+          </button>
+
           {/* Select Box mode */}
           <button
             onClick={() => {
@@ -714,6 +836,72 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
         </div>
       )}
 
+      {showAllWords && (
+        <div className="bg-violet-50/60 px-4 py-3 border-b border-violet-200 space-y-2.5 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-violet-900">
+              <strong>All Words on Page {currentPage}</strong>
+              {uniqueWords.length > 0 && (
+                <span className="text-violet-700">
+                  {' '}
+                  &bull; {pageWords.length} words, {uniqueWords.length} unique &bull; click one to add it to Find
+                </span>
+              )}
+            </span>
+            <button
+              onClick={() => setShowAllWords(false)}
+              className="p-1 text-violet-500 hover:text-violet-800 rounded"
+              title="Close"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {uniqueWords.length === 0 ? (
+            <div className="flex items-center justify-between gap-2 text-violet-800">
+              <span>No text found on this page yet. Run OCR to detect words in images and scans.</span>
+              <button
+                disabled={isOcrRunning}
+                onClick={handleRunOcr}
+                className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-semibold disabled:opacity-50 shrink-0"
+              >
+                {isOcrRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ScanText className="w-3.5 h-3.5" />}
+                <span>Run OCR</span>
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  value={wordFilter}
+                  onChange={(e) => setWordFilter(e.target.value)}
+                  placeholder="Filter words..."
+                  className="w-full pl-8 pr-3 py-1.5 bg-white rounded-lg border border-violet-200 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400"
+                />
+              </div>
+              <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
+                {filteredWords.map((w) => (
+                  <button
+                    key={w.text}
+                    onClick={() => handleWordChipClick(w.text)}
+                    onMouseEnter={() => setHoveredWord(w.text)}
+                    onMouseLeave={() => setHoveredWord(null)}
+                    className="inline-flex items-center space-x-1 px-2 py-1 rounded-md bg-white border border-violet-200 text-slate-800 hover:bg-violet-600 hover:text-white hover:border-violet-600 transition-colors"
+                  >
+                    <span>{w.text}</span>
+                    {w.count > 1 && <span className="opacity-60 text-[10px]">×{w.count}</span>}
+                  </button>
+                ))}
+                {filteredWords.length === 0 && (
+                  <span className="text-slate-500">No words match "{wordFilter}".</span>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {isCompareOriginal && (
         <div className="bg-amber-50 px-4 py-2 text-xs text-amber-900 border-b border-amber-200 flex items-center justify-between">
           <span>👁️ <strong>Viewing Original PDF:</strong> Replacement masks and text are temporarily hidden for comparison.</span>
@@ -751,6 +939,31 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
           onMouseUp={handleMouseUp}
         >
           <canvas ref={canvasRef} className="block" />
+
+          {/* Outline every detected word while the All Words panel is open */}
+          {showAllWords && pageViewport && (
+            <div className="absolute inset-0 pointer-events-none z-10">
+              {pageWords.map((w, i) => {
+                const isHovered = hoveredWord !== null && cleanWord(w.text) === hoveredWord;
+                return (
+                  <div
+                    key={`word-outline-${i}`}
+                    className={`absolute rounded-xs ${
+                      isHovered
+                        ? 'border-2 border-violet-600 bg-violet-500/25'
+                        : 'border border-violet-400/60 bg-violet-400/5'
+                    }`}
+                    style={{
+                      left: `${w.pdfX * scale - 1}px`,
+                      top: `${pageViewport.height - (w.pdfY + w.pdfHeight) * scale - 1}px`,
+                      width: `${w.pdfWidth * scale + 2}px`,
+                      height: `${w.pdfHeight * scale + 2}px`,
+                    }}
+                  />
+                );
+              })}
+            </div>
+          )}
 
           {/* Active drawing box */}
           {isDrawMode && dragStart && currentDrag && (
