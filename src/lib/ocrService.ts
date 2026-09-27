@@ -1,4 +1,5 @@
 import { createWorker } from 'tesseract.js';
+import { analyzeWordInk, pickLineFont, MatchedFontFamily, WordInkAnalysis } from './fontMatcher';
 
 export interface OcrWord {
   text: string;
@@ -9,6 +10,11 @@ export interface OcrWord {
   pdfHeight: number;
   pageIndex: number;
   sampledColor: string;
+  // Estimated appearance of the original word, used to draw a matching replacement
+  sampledTextColor: string;
+  fontFamily: MatchedFontFamily;
+  isBold: boolean;
+  fontSize: number; // PDF points
 }
 
 let workerPromise: Promise<any> | null = null;
@@ -90,22 +96,53 @@ export async function runOcrOnPage(
   for (const block of ret.data.blocks || []) {
     for (const paragraph of block.paragraphs || []) {
       for (const line of paragraph.lines || []) {
-        for (const w of line.words || []) {
-          const cleanText = w.text.trim();
-          if (!cleanText) continue;
+        const lineWords: { w: any; text: string; sampledColor: string; analysis: WordInkAnalysis | null }[] = (line.words || [])
+          .map((w: any) => ({ w, text: w.text.trim() as string }))
+          .filter((lw: { text: string }) => lw.text.length > 0)
+          .map((lw: { w: any; text: string }) => {
+            const { x0, y0, x1, y1 } = lw.w.bbox;
+            const sampledColor = ctx ? sampleBackgroundColor(ctx, x0, y0, x1, y1) : '#ffffff';
+            let analysis: WordInkAnalysis | null = null;
+            try {
+              analysis = ctx ? analyzeWordInk(ctx, lw.text, lw.w.bbox, sampledColor) : null;
+            } catch {
+              analysis = null;
+            }
+            return { ...lw, sampledColor, analysis };
+          });
 
+        const lineFont = pickLineFont(lineWords);
+        const family: MatchedFontFamily = lineFont?.family ?? 'Helvetica';
+
+        // Line-wide size, so replacements on the same line stay consistent.
+        const lineSizes = lineWords
+          .map((lw) => lw.analysis?.scores.find((s) => s.family === family && s.isBold === lineFont?.isBold)?.fontSizePx)
+          .filter((v): v is number => v !== undefined)
+          .sort((a, b) => a - b);
+        const lineSizePx = lineSizes.length > 0 ? lineSizes[Math.floor(lineSizes.length / 2)] : null;
+
+        for (const { w, text, sampledColor, analysis } of lineWords) {
           const { x0, y0, x1, y1 } = w.bbox;
           const pdfX = x0 * scaleX;
           const pdfWidth = (x1 - x0) * scaleX;
           const pdfHeight = (y1 - y0) * scaleY;
           // In PDF coordinates, origin is bottom-left
           const pdfY = pageHeight - (y1 * scaleY);
-          const pdfBaseline = pdfY + pdfHeight * 0.15;
 
-          const sampledColor = ctx ? sampleBackgroundColor(ctx, x0, y0, x1, y1) : '#ffffff';
+          // Bold can change word-to-word (e.g. "Total:" in bold, value in regular),
+          // but very short words don't carry enough pixels to decide on their own.
+          const regular = analysis?.scores.find((s) => s.family === family && !s.isBold);
+          const bold = analysis?.scores.find((s) => s.family === family && s.isBold);
+          const isBold =
+            text.length >= 3 && regular && bold ? bold.score < regular.score : Boolean(lineFont?.isBold);
+          const chosen = isBold ? bold : regular;
+
+          const fontSizePx = lineSizePx ?? chosen?.fontSizePx ?? (y1 - y0) / 0.75;
+          const descentPx = chosen ? (chosen.descentPx * fontSizePx) / chosen.fontSizePx : (y1 - y0) * 0.15;
+          const pdfBaseline = pageHeight - (y1 - descentPx) * scaleY;
 
           words.push({
-            text: cleanText,
+            text,
             pdfX,
             pdfY,
             pdfBaseline,
@@ -113,6 +150,10 @@ export async function runOcrOnPage(
             pdfHeight,
             pageIndex,
             sampledColor,
+            sampledTextColor: analysis?.textColor ?? '#000000',
+            fontFamily: family,
+            isBold,
+            fontSize: fontSizePx * scaleY,
           });
         }
       }

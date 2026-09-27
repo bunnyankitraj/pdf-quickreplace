@@ -458,7 +458,7 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
         pdfHeight,
         sampledColor,
         sampledTextColor,
-        fontFamily: isScannedPdf ? 'Courier' : 'auto',
+        fontFamily: 'auto',
         wordsInside,
       });
 

@@ -206,13 +206,23 @@ export async function findMatchesInPdf(
       if (isScopedWordRule) continue;
 
       const box = rule.manualBox;
-      const baseFontSize = Math.max(box.pdfHeight * 0.75, 8);
+      // On OCR'd pages, borrow the detected font of the first word inside the box.
+      const ocrWordInBox = ocrWordsByPage?.get(box.pageIndex)?.find(
+        (word) =>
+          word.pdfX < box.pdfX + box.pdfWidth &&
+          word.pdfX + word.pdfWidth > box.pdfX &&
+          word.pdfY < box.pdfY + box.pdfHeight &&
+          word.pdfY + word.pdfHeight > box.pdfY
+      );
+      const baseFontSize = ocrWordInBox?.fontSize ?? Math.max(box.pdfHeight * 0.75, 8);
       const adjustedFontSize = Math.max(4, baseFontSize + (rule.fontSizeAdjustment || 0));
 
       const chosenFont: 'Helvetica' | 'Courier' | 'TimesRoman' =
         rule.fontFamily && rule.fontFamily !== 'auto'
           ? rule.fontFamily
-          : (box.fontFamily && box.fontFamily !== 'auto' ? box.fontFamily : 'Courier');
+          : box.fontFamily && box.fontFamily !== 'auto'
+          ? box.fontFamily
+          : ocrWordInBox?.fontFamily ?? 'Courier';
 
       const chosenColor =
         rule.textColor && rule.textColor !== 'auto'
@@ -237,7 +247,10 @@ export async function findMatchesInPdf(
         maskColor: chosenMask,
         textColor: chosenColor,
         fontFamily: chosenFont,
-        isBold: rule.isBold === true,
+        isBold:
+          rule.isBold === 'auto' || rule.isBold === undefined
+            ? Boolean(ocrWordInBox?.isBold)
+            : rule.isBold === true,
         isItemReflow: false,
       });
       matchesByRule[rule.id] = (matchesByRule[rule.id] || 0) + 1;
@@ -471,18 +484,23 @@ export async function findMatchesInPdf(
             : wordText.includes(target) || rawWordText.includes(rawTarget);
 
           if (isMatch) {
-            const baseFontSize = Math.max(word.pdfHeight * 0.75, 8);
+            const baseFontSize = word.fontSize ?? Math.max(word.pdfHeight * 0.75, 8);
             const adjustedFontSize = Math.max(4, baseFontSize + (rule.fontSizeAdjustment || 0));
 
             const finalTextColor =
               rule.textColor && rule.textColor !== 'auto'
                 ? rule.textColor
-                : (word as any).sampledTextColor || '#000000';
+                : word.sampledTextColor || '#000000';
 
             const finalFontFamily =
               rule.fontFamily && rule.fontFamily !== 'auto'
                 ? rule.fontFamily
-                : 'Courier';
+                : word.fontFamily || 'Courier';
+
+            const finalIsBold =
+              rule.isBold === 'auto' || rule.isBold === undefined
+                ? Boolean(word.isBold)
+                : rule.isBold === true;
 
             occurrences.push({
               ruleId: rule.id,
@@ -497,7 +515,7 @@ export async function findMatchesInPdf(
               maskColor: rule.maskColor === 'auto' || !rule.maskColor ? (word.sampledColor || '#ffffff') : rule.maskColor,
               textColor: finalTextColor,
               fontFamily: finalFontFamily,
-              isBold: rule.isBold === true,
+              isBold: finalIsBold,
               isItemReflow: false,
             });
 
