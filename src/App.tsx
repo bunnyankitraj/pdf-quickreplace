@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Header } from './components/Header';
 import { DropZone } from './components/DropZone';
 import { ReplacementRules } from './components/ReplacementRules';
 import { PdfPreview } from './components/PdfPreview';
 import { HelpModal } from './components/HelpModal';
+import { ToastHost } from './components/ToastHost';
+import { showToast } from './lib/toast';
+import { extractPdfWords } from './lib/suggest';
 import {
   ReplacementRule,
   ReplacementStats,
@@ -20,11 +23,11 @@ export const App: React.FC = () => {
   const [fileName, setFileName] = useState<string | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [fileSize, setFileSize] = useState<number | null>(null);
-  const [isScannedPdf, setIsScannedPdf] = useState<boolean>(false);
   // Set when the user uploaded an image; the result is exported back to that format.
   const [sourceImage, setSourceImage] = useState<SourceImageInfo | null>(null);
 
   const [ocrWordsByPage, setOcrWordsByPage] = useState<Map<number, OcrWord[]>>(new Map());
+  const [textLayerWords, setTextLayerWords] = useState<string[]>([]);
 
   const [rules, setRules] = useState<ReplacementRule[]>([
     {
@@ -51,11 +54,34 @@ export const App: React.FC = () => {
 
   const debounceTimerRef = useRef<any>(null);
 
+  // Words in the document (text layer + OCR), used for "did you mean" suggestions
+  useEffect(() => {
+    setTextLayerWords([]);
+    if (!pdfBytes) return;
+    let cancelled = false;
+    extractPdfWords(pdfBytes)
+      .then((words) => !cancelled && setTextLayerWords(words))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfBytes]);
+
+  const vocabulary = useMemo(() => {
+    const all = new Set(textLayerWords);
+    for (const words of ocrWordsByPage.values()) {
+      for (const w of words) {
+        const clean = w.text.replace(/^[^\w₹$€£]+|[^\w%]+$/g, '');
+        if (clean) all.add(clean);
+      }
+    }
+    return [...all];
+  }, [textLayerWords, ocrWordsByPage]);
+
   // Trigger scanning when PDF, rules, or OCR cache changes
   useEffect(() => {
     if (!pdfBytes) {
       setStats(null);
-      setIsScannedPdf(false);
       return;
     }
 
@@ -72,9 +98,6 @@ export const App: React.FC = () => {
       try {
         const result = await findMatchesInPdf(pdfBytes, rules, ocrWordsByPage);
         setStats(result);
-        if (result.isScannedPdf !== undefined) {
-          setIsScannedPdf(result.isScannedPdf);
-        }
       } catch (err) {
         console.error('Error scanning PDF:', err);
       } finally {
@@ -157,7 +180,6 @@ export const App: React.FC = () => {
     setPageCount(null);
     setFileSize(null);
     setStats(null);
-    setIsScannedPdf(false);
     setSourceImage(null);
     setOcrWordsByPage(new Map());
     setDownloadSuccess(null);
@@ -316,7 +338,7 @@ export const App: React.FC = () => {
       });
     } catch (err) {
       console.error('Replacement failed:', err);
-      alert('An error occurred while replacing text in the PDF.');
+      showToast('Something went wrong while generating the file. Please try again.', 'error');
     } finally {
       setIsProcessing(false);
     }
@@ -356,6 +378,7 @@ export const App: React.FC = () => {
                 onClearRules={handleClearRules}
                 matchesByRule={stats?.matchesByRule ?? {}}
                 isScanning={isScanning}
+                vocabulary={vocabulary}
               />
 
               {/* Action Box */}
@@ -420,7 +443,6 @@ export const App: React.FC = () => {
                 pageCount={pageCount}
                 occurrences={stats?.occurrences ?? []}
                 rules={rules}
-                isScannedPdf={isScannedPdf}
                 onOcrCompleted={handleOcrCompleted}
                 onManualBoxCreated={handleManualBoxCreated}
                 onPickWord={handlePickWord}
@@ -438,6 +460,7 @@ export const App: React.FC = () => {
       </footer>
 
       <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+      <ToastHost />
     </div>
   );
 };

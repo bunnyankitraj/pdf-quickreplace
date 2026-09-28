@@ -19,12 +19,25 @@ export interface OcrWord {
 
 let workerPromise: Promise<any> | null = null;
 
+export type OcrProgress = { phase: 'loading' | 'recognizing'; percent: number };
+// Tesseract reports progress through a single logger per worker, so route it to whichever page is running.
+let progressListener: ((p: OcrProgress) => void) | null = null;
+
 async function getWorker() {
   if (!workerPromise) {
-    workerPromise = (async () => {
-      const worker = await createWorker('eng');
-      return worker;
-    })();
+    workerPromise = createWorker('eng', 1, {
+      logger: (m: { status: string; progress: number }) => {
+        if (!progressListener) return;
+        const recognizing = m.status === 'recognizing text';
+        progressListener({
+          phase: recognizing ? 'recognizing' : 'loading',
+          percent: recognizing ? Math.round(m.progress * 100) : 0,
+        });
+      },
+    }).catch((err) => {
+      workerPromise = null; // allow a retry after a failed load (e.g. offline)
+      throw err;
+    });
   }
   return workerPromise;
 }
@@ -79,11 +92,17 @@ export async function runOcrOnPage(
   pageWidth: number, // in PDF points
   pageHeight: number, // in PDF points
   pageIndex: number,
-  onProgress?: (percent: number) => void
+  onProgress?: (p: OcrProgress) => void
 ): Promise<OcrWord[]> {
-  const worker = await getWorker();
-
-  const ret = await worker.recognize(canvas, {}, { blocks: true });
+  progressListener = onProgress ?? null;
+  onProgress?.({ phase: 'loading', percent: 0 });
+  let ret;
+  try {
+    const worker = await getWorker();
+    ret = await worker.recognize(canvas, {}, { blocks: true });
+  } finally {
+    progressListener = null;
+  }
   const words: OcrWord[] = [];
 
   const canvasWidth = canvas.width;

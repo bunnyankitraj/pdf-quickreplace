@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { UploadCloud, FileText, CheckCircle2, RotateCcw, Sparkles } from 'lucide-react';
 import { createSampleInvoicePdf } from '../lib/pdfHelper';
 import { pdfjsLib } from '../lib/pdfWorker';
+import { showToast } from '../lib/toast';
 import { imageFileToPdf, isImageFile, SourceImageInfo } from '../lib/imageHelper';
 
 interface DropZoneProps {
@@ -44,13 +45,13 @@ export const DropZone: React.FC<DropZoneProps> = ({
         onFileLoaded(pdfBytes, file.name, 1, info);
       } catch (err) {
         console.error('Image load failed:', err);
-        alert('Could not read this image file.');
+        showToast('Could not read this image file. Try saving it as PNG or JPG.', 'error');
       }
       return;
     }
 
     if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      alert('Please select a PDF or image file (PNG, JPG, WebP, GIF, BMP).');
+      showToast('That file type isn\'t supported. Choose a PDF or an image (PNG, JPG, WebP, GIF, BMP).', 'error');
       return;
     }
 

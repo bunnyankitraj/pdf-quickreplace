@@ -22,7 +22,8 @@ import {
 } from 'lucide-react';
 import { pdfjsLib } from '../lib/pdfWorker';
 import { MatchOccurrence, ManualBox, ReplacementRule } from '../lib/pdfReplacer';
-import { runOcrOnPage, OcrWord } from '../lib/ocrService';
+import { runOcrOnPage, OcrWord, OcrProgress } from '../lib/ocrService';
+import { showToast } from '../lib/toast';
 
 interface PageTextItem {
   str: string;
@@ -37,7 +38,6 @@ interface PdfPreviewProps {
   pageCount: number;
   occurrences: MatchOccurrence[];
   rules?: ReplacementRule[];
-  isScannedPdf: boolean;
   onOcrCompleted: (pageIndex: number, words: OcrWord[]) => void;
   onManualBoxCreated: (box: ManualBox) => void;
   onPickWord?: (word: string) => void;
@@ -60,7 +60,6 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
   pageCount,
   occurrences,
   rules,
-  isScannedPdf,
   onOcrCompleted,
   onManualBoxCreated,
   onPickWord,
@@ -71,7 +70,13 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
   const [showHighlights, setShowHighlights] = useState<boolean>(true);
   const [isRendering, setIsRendering] = useState<boolean>(false);
   const [isOcrRunning, setIsOcrRunning] = useState<boolean>(false);
-  const [ocrSuccessMsg, setOcrSuccessMsg] = useState<string | null>(null);
+  // OCR status for one page; shown only while that page is on screen
+  const [ocrStatus, setOcrStatus] = useState<
+    | { pageIndex: number; state: 'running'; progress: OcrProgress }
+    | { pageIndex: number; state: 'done'; count: number }
+    | { pageIndex: number; state: 'error' }
+    | null
+  >(null);
 
   // Compare mode: view original vs live replaced
   const [isCompareOriginal, setIsCompareOriginal] = useState<boolean>(false);
@@ -100,7 +105,15 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
   const pageTextItemsRef = useRef<PageTextItem[]>([]);
-  const [pageTextItems, setPageTextItems] = useState<PageTextItem[]>([]);
+  // Text layer of the rendered page, tagged with its document and page so stale results are ignored
+  const [pageText, setPageText] = useState<{
+    bytes: Uint8Array;
+    pageIndex: number;
+    items: PageTextItem[];
+  } | null>(null);
+  const pdfBytesRef = useRef(pdfBytes);
+  pdfBytesRef.current = pdfBytes;
+  const autoOcrTriedRef = useRef<Set<number>>(new Set());
 
   // All Words panel
   const [showAllWords, setShowAllWords] = useState<boolean>(false);
@@ -122,7 +135,7 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
           pdfWidth: w.pdfWidth,
           pdfHeight: w.pdfHeight,
         }))
-      : pageTextItems.flatMap((item) => {
+      : (pageText?.bytes === pdfBytes && pageText.pageIndex === pageIndex ? pageText.items : []).flatMap((item) => {
           const charW = item.width / Math.max(1, item.str.length);
           const words: PageWord[] = [];
           const re = /\S+/g;
@@ -193,6 +206,8 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
 
   useEffect(() => {
     hasAutoFitRef.current = false;
+    autoOcrTriedRef.current = new Set();
+    setOcrStatus(null);
   }, [pdfBytes]);
 
   // Match Navigation Handlers
@@ -260,10 +275,10 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
             });
           }
           pageTextItemsRef.current = items;
-          setPageTextItems(items);
+          setPageText({ bytes: pdfBytes, pageIndex: currentPage - 1, items });
         } catch {
           pageTextItemsRef.current = [];
-          setPageTextItems([]);
+          setPageText({ bytes: pdfBytes, pageIndex: currentPage - 1, items: [] });
         }
 
         const unscaledViewport = page.getViewport({ scale: 1.0 });
@@ -334,29 +349,58 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
     };
   }, [pdfBytes, currentPage, scale]);
 
-  const handleRunOcr = async () => {
-    if (!canvasRef.current || !pageViewport) return;
+  const handleRunOcr = async (targetPageIndex: number = pageIndex) => {
+    if (isOcrRunning) return;
+    const bytes = pdfBytes;
 
     setIsOcrRunning(true);
-    setOcrSuccessMsg(null);
+    setOcrStatus({ pageIndex: targetPageIndex, state: 'running', progress: { phase: 'loading', percent: 0 } });
     try {
-      const words = await runOcrOnPage(
-        canvasRef.current,
-        pageViewport.pdfWidth,
-        pageViewport.pdfHeight,
-        pageIndex
+      // OCR its own high-resolution render so accuracy doesn't depend on the preview zoom.
+      const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+      const page = await doc.getPage(targetPageIndex + 1);
+      const base = page.getViewport({ scale: 1 });
+      const ocrScale = Math.min(4, Math.max(2, 2200 / base.width), Math.sqrt(16_000_000 / (base.width * base.height)));
+      const viewport = page.getViewport({ scale: ocrScale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      await doc.destroy();
+
+      const words = await runOcrOnPage(canvas, base.width, base.height, targetPageIndex, (progress) =>
+        setOcrStatus({ pageIndex: targetPageIndex, state: 'running', progress })
       );
 
-      onOcrCompleted(pageIndex, words);
-      setOcrSuccessMsg(`Found ${words.length} words via OCR!`);
-      setTimeout(() => setOcrSuccessMsg(null), 5000);
+      // The user may have switched files while OCR was running.
+      if (pdfBytesRef.current !== bytes) return;
+      onOcrCompleted(targetPageIndex, words);
+      setOcrStatus({ pageIndex: targetPageIndex, state: 'done', count: words.length });
+      setTimeout(
+        () => setOcrStatus((s) => (s && s.state === 'done' && s.pageIndex === targetPageIndex ? null : s)),
+        4000
+      );
     } catch (err) {
       console.error('OCR failed:', err);
-      alert('OCR failed to recognize words on this image.');
+      if (pdfBytesRef.current !== bytes) return;
+      setOcrStatus({ pageIndex: targetPageIndex, state: 'error' });
+      showToast('Could not read text on this page. Check your connection and try again.', 'error');
     } finally {
       setIsOcrRunning(false);
     }
   };
+
+  // Images and scanned pages have no text layer: read them automatically.
+  useEffect(() => {
+    if (!pageText || pageText.bytes !== pdfBytes || pageText.pageIndex !== pageIndex) return;
+    if (pageText.items.length > 0 || (ocrPageWords && ocrPageWords.length > 0)) return;
+    if (isOcrRunning || autoOcrTriedRef.current.has(pageIndex)) return;
+    autoOcrTriedRef.current.add(pageIndex);
+    handleRunOcr(pageIndex);
+  }, [pageText, pdfBytes, pageIndex, ocrPageWords, isOcrRunning]);
 
   // Click-to-Pick Text Handler
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -572,40 +616,48 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
-      {/* Notice Banner for Scanned / Image-only PDFs */}
-      {isScannedPdf && (
-        <div className="p-3 bg-amber-50 border-b border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs text-amber-900">
-          <div className="flex items-center space-x-2">
-            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+      {/* OCR status for the current page */}
+      {ocrStatus && ocrStatus.pageIndex === pageIndex && (
+        ocrStatus.state === 'running' ? (
+          <div className="px-4 py-2.5 bg-blue-50 border-b border-blue-200 text-xs text-blue-900 space-y-1.5">
+            <div className="flex items-center gap-2">
+              <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />
+              <span>
+                {ocrStatus.progress.phase === 'loading'
+                  ? 'Getting ready to read text from this page...'
+                  : `Reading text from this page... ${ocrStatus.progress.percent}%`}
+              </span>
+            </div>
+            <div className="h-1 rounded-full bg-blue-100 overflow-hidden">
+              <div
+                className={`h-full bg-blue-600 transition-all ${ocrStatus.progress.phase === 'loading' ? 'w-1/12 animate-pulse' : ''}`}
+                style={ocrStatus.progress.phase === 'recognizing' ? { width: `${Math.max(8, ocrStatus.progress.percent)}%` } : undefined}
+              />
+            </div>
+          </div>
+        ) : ocrStatus.state === 'done' ? (
+          <div className="px-4 py-2.5 bg-emerald-50 border-b border-emerald-200 flex items-center gap-2 text-xs text-emerald-800">
+            <Check className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>
-              <strong>Scanned / Image PDF Detected:</strong> Document has no selectable text layer.
+              {ocrStatus.count > 0
+                ? `Found ${ocrStatus.count} words on this page. Type one in Find, or open All Words.`
+                : 'No readable text found on this page.'}
             </span>
           </div>
-          <button
-            disabled={isOcrRunning}
-            onClick={handleRunOcr}
-            className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-xs disabled:opacity-50 transition-colors"
-          >
-            {isOcrRunning ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Reading Image Words...</span>
-              </>
-            ) : (
-              <>
-                <ScanText className="w-3.5 h-3.5" />
-                <span>Run OCR (Detect Words)</span>
-              </>
-            )}
-          </button>
-        </div>
-      )}
-
-      {ocrSuccessMsg && (
-        <div className="p-2.5 bg-emerald-50 border-b border-emerald-200 flex items-center space-x-2 text-xs text-emerald-800 animate-in fade-in">
-          <Check className="w-4 h-4 text-emerald-600" />
-          <span>{ocrSuccessMsg}</span>
-        </div>
+        ) : (
+          <div className="px-4 py-2.5 bg-rose-50 border-b border-rose-200 flex items-center justify-between gap-2 text-xs text-rose-900">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>Couldn't read text on this page.</span>
+            </div>
+            <button
+              onClick={() => handleRunOcr(pageIndex)}
+              className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold"
+            >
+              Try again
+            </button>
+          </div>
+        )
       )}
 
       {pickedWordNotice && (
@@ -784,9 +836,9 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
           {/* OCR button */}
           <button
             disabled={isOcrRunning}
-            onClick={handleRunOcr}
-            className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 transition-colors"
-            title="Run OCR to recognize words on this page"
+            onClick={() => handleRunOcr(pageIndex)}
+            className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 disabled:opacity-50 transition-colors"
+            title="Re-read the text on this page (OCR). Runs automatically for images and scans."
           >
             {isOcrRunning ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -858,17 +910,23 @@ export const PdfPreview: React.FC<PdfPreviewProps> = ({
           </div>
 
           {uniqueWords.length === 0 ? (
-            <div className="flex items-center justify-between gap-2 text-violet-800">
-              <span>No text found on this page yet. Run OCR to detect words in images and scans.</span>
-              <button
-                disabled={isOcrRunning}
-                onClick={handleRunOcr}
-                className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-semibold disabled:opacity-50 shrink-0"
-              >
-                {isOcrRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ScanText className="w-3.5 h-3.5" />}
-                <span>Run OCR</span>
-              </button>
-            </div>
+            isOcrRunning ? (
+              <div className="flex items-center gap-2 text-violet-800">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Reading text from this page...</span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2 text-violet-800">
+                <span>No text found on this page.</span>
+                <button
+                  onClick={() => handleRunOcr(pageIndex)}
+                  className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-semibold shrink-0"
+                >
+                  <ScanText className="w-3.5 h-3.5" />
+                  <span>Try OCR again</span>
+                </button>
+              </div>
+            )
           ) : (
             <>
               <div className="relative">

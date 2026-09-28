@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, ClipboardPaste, ArrowRight } from 'lucide-react';
 import { ReplacementRule } from '../lib/pdfReplacer';
+import { showToast } from '../lib/toast';
 
 interface BulkImportModalProps {
   isOpen: boolean;
@@ -62,7 +63,7 @@ export const BulkImportModal: React.FC<BulkImportModalProps> = ({
       setText('');
       onClose();
     } else {
-      alert('Please enter at least one find and replace pair (e.g. "Old Name -> New Name").');
+      showToast('Enter at least one pair, e.g. "Old Name -> New Name".', 'error');
     }
   };
 

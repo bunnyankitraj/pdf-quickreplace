@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { ReplacementRule, FontFamilyChoice } from '../lib/pdfReplacer';
 import { BulkImportModal } from './BulkImportModal';
+import { suggestWords } from '../lib/suggest';
 
 interface ReplacementRulesProps {
   rules: ReplacementRule[];
@@ -22,6 +23,8 @@ interface ReplacementRulesProps {
   onClearRules: () => void;
   matchesByRule: Record<string, number>;
   isScanning: boolean;
+  // Words known to be in the document, for "did you mean" hints
+  vocabulary?: string[];
 }
 
 export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
@@ -33,6 +36,7 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
   onClearRules,
   matchesByRule,
   isScanning,
+  vocabulary = [],
 }) => {
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null);
   const [isBulkModalOpen, setIsBulkModalOpen] = useState<boolean>(false);
@@ -83,6 +87,11 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
           const matchCount = matchesByRule[rule.id] ?? 0;
           const isExpanded = expandedRuleId === rule.id;
           const isManualBox = Boolean(rule.manualBox);
+          const hasFindText = rule.findText.trim().length > 0 && rule.findText !== 'Selected Area';
+          const suggestions =
+            hasFindText && matchCount === 0 && !isScanning && !isManualBox
+              ? suggestWords(rule.findText, vocabulary)
+              : [];
 
           return (
             <div
@@ -107,10 +116,10 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
                 </div>
               )}
 
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <div className="flex items-center gap-2">
                 {/* Index / Type indicator */}
                 <div
-                  className={`hidden sm:flex w-6 h-6 rounded-full items-center justify-center text-xs font-semibold shrink-0 ${
+                  className={`flex w-6 h-6 rounded-full items-center justify-center text-xs font-semibold shrink-0 ${
                     isManualBox
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-200 text-slate-600'
@@ -121,38 +130,41 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
                 </div>
 
                 {/* Find input */}
-                <div className="flex-1 relative">
+                <div className="flex-1 min-w-0 relative">
                   <input
                     type="text"
                     value={rule.findText === 'Selected Area' ? '' : rule.findText}
                     onChange={(e) => onChangeRule(rule.id, { findText: e.target.value })}
                     placeholder={
                       isManualBox
-                        ? 'Word in this area (or leave blank for whole box)'
-                        : 'Word to find (e.g. Ankit)'
+                        ? 'Word in area (blank = whole box)'
+                        : 'Find'
                     }
                     className="w-full text-sm px-3 py-2 bg-white rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 placeholder:text-slate-400"
                   />
                 </div>
 
-                <div className="hidden sm:flex items-center justify-center text-slate-400">
+                <div className="flex items-center justify-center text-slate-400 shrink-0">
                   <ArrowRight className="w-4 h-4" />
                 </div>
 
                 {/* Replace input */}
-                <div className="flex-1 relative">
+                <div className="flex-1 min-w-0 relative">
                   <input
                     type="text"
                     value={rule.replaceText}
                     onChange={(e) => onChangeRule(rule.id, { replaceText: e.target.value })}
-                    placeholder="Replace with (e.g. Buny)"
+                    placeholder="Replace with"
                     className="w-full text-sm px-3 py-2 bg-white rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 placeholder:text-slate-400 font-medium"
                   />
                 </div>
 
-                {/* Controls & Match badge */}
-                <div className="flex items-center justify-between sm:justify-end space-x-2 pt-1 sm:pt-0">
-                  {rule.findText.trim().length > 0 && rule.findText !== 'Selected Area' && (
+              </div>
+
+              {/* Match status, suggestions & rule controls */}
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5 min-w-0 min-h-[30px]">
+                  {hasFindText && (
                     <span
                       className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium ${
                         matchCount > 0
@@ -170,7 +182,24 @@ export const ReplacementRules: React.FC<ReplacementRulesProps> = ({
                       )}
                     </span>
                   )}
-
+                  {suggestions.length > 0 && (
+                    <>
+                      <span className="text-[11px] text-slate-500">Did you mean</span>
+                      {suggestions.map((sug) => (
+                        <button
+                          key={sug}
+                          type="button"
+                          onClick={() => onChangeRule(rule.id, { findText: sug })}
+                          className="text-[11px] px-2 py-0.5 rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-600 hover:text-white hover:border-blue-600 font-medium transition-colors"
+                          title={`Use "${sug}"`}
+                        >
+                          {sug}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
                     onClick={() => toggleOptions(rule.id)}
